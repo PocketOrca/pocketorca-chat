@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.pocketorca.chat">
+
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <!-- B1a: foreground service + doze handling -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
+    <!-- vc29: 精确闹钟驱动熄屏轮询（setExactAndAllowWhileIdle，穿透 Doze） -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM"/>
+
+    <application
+        android:label="PocketOrca-Chat"
+        android:icon="@mipmap/ic_launcher"
+        android:usesCleartextTraffic="true"
+        android:theme="@style/AppTheme"
+        android:allowBackup="false">
+
+        <!-- Demo (D0/M1): LAN HTTP allowed per PLAN §2 — TLS + Keystore hardening lands in M4. -->
+        <activity
+            android:name="com.pocketorca.chat.MainActivity"
+            android:exported="true"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
+
+        <!-- B1a: ForegroundService + PollScheduler -->
+        <service
+            android:name="com.pocketorca.chat.PollScheduler"
+            android:foregroundServiceType="dataSync"
+            android:exported="false"
+            android:stopWithTask="false"/>
+
+        <!-- B1a: Boot receiver to restart PollScheduler after reboot -->
+        <receiver
+            android:name="com.pocketorca.chat.BootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED"/>
+            </intent-filter>
+        </receiver>
+
+    </application>
+</manifest>

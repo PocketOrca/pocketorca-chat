@@ -1,0 +1,8 @@
+build/
+*.apk
+*.apk.idsig
+*.bak*
+.annpu-sign.env
+*.keystore
+*.jks
+.DS_Store
