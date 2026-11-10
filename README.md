@@ -1,112 +1,88 @@
 # PocketOrca-Chat
 
-An Android client for [Hermes Agent](https://github.com/NousResearch/hermes-agent) that talks
-directly to your own `api_server` over LAN or a private VPN. No middleman service, no Firebase,
-no Google Play Services.
+一个 Android 客户端，直连你自己的 Hermes Agent `api_server`（局域网或私有 VPN）。无中间服务、无 Firebase、无 Google Play Services。
 
-> **Maintenance status: archived / as-is.**
-> This project is finished and will not be actively maintained. Issues and PRs may go unanswered.
-> It exists because it was useful to one person and might be useful to someone else. Install it
-> over an existing copy; do not uninstall first if you want to keep your local chat history.
+## 这是什么
 
-## What it is
+微信形态的聊天 App，每个"联系人"就是一个 Hermes 端点：地址 + 端口 + `API_SERVER_KEY`。主要解决的是类似微信的客户端不能添加多Agents，会被经常限流，还不能搜索聊天历史记录，所以才有了这个客户端，通过它可以与机器上的 agent 对话——包括工具调用、审批卡片和图片。
 
-A WeChat-shaped chat app whose contacts are Hermes endpoints. Each contact is an address, a port
-and an `API_SERVER_KEY`. Open a conversation, type, and you are talking to the agent running on
-that machine — including tool calls, approval prompts, and images.
+核心约束：**对 Hermes 服务端零改动。** 全部走原生 `api_server` HTTP API。Hermes 0.2x+ 开启 api_server 即可使用。
 
-It was built around one constraint: **zero changes to the Hermes server.** Everything happens over
-the stock `api_server` HTTP API. If you run Hermes 0.2x or later with `api_server` enabled, this
-client should just work.
+## 这不是什么
 
-## What it is not
+- 非官方产品，无关联
+- 不是 Hermes WebUI / dashboard 的封装
+- 不替代桌面端，是手机形态的遥控器
+- 不是推送通知客户端（无 FCM、无厂商推送）
 
-- Not an official Nous Research product. No affiliation.
-- Not a wrapper around Hermes WebUI or the agent dashboard.
-- Not a replacement for the desktop app. It is a phone-shaped remote control.
-- Not a push-notification client. There is no FCM and no vendor push channel, by design.
+## 功能
 
-## Features
+- 多联系人，一端点一联系人，各自独立 key
+- 每联系人一个会话，本地 SQLite 聊天记录，重启不丢
+- 特意关闭流式：回复整条到达，微信式
+- 审批卡片：危险命令弹卡可点（once / session / always / deny）
+- 图片收发（服务端 `MEDIA:` 路径自动渲染，点图可存相册）
+- 后台轮询可调间隔、前台服务、开机自启
+- 设备端斜杠命令：/help /new /clear /stop /model /context /status /search
+- 跨联系人历史搜索
+- Keystore 加密存 key（AES/GCM，每联系人独立）
+- 字体大小调节，跟随系统明暗
 
-- Multiple contacts — one per Hermes endpoint, each with its own key
-- Session-per-contact, with a local SQLite transcript that survives app restarts
-- Streaming is deliberately off: replies arrive whole, WeChat-style
-- Approval cards: dangerous commands raised by the agent appear as tappable prompts (`once` / `session` / `always` / `deny`)
-- Image send and receive (images come back as `MEDIA:` paths, rendered inline)
-- Background polling with configurable interval, foreground service, boot restart
-- Slash commands handled on the device: `/help` `/new` `/clear` `/stop` `/model` `/context` `/status` `/search`
-- Cross-contact history search
-- Keystore-backed credential storage (AES/GCM, per-contact key)
-- Font size control, light/dark following the system
+## 已知短板
 
-## Known limitations
+- **后台延迟达不到微信级。** 无推送通道，靠轮询。Android 12+ Doze 会拉长间隔。前台服务 + setExactAndAllowWhileIdle 可压到 1-2 分钟，代价是耗电。这是设计的物理后果，不是 bug。
+- **允许明文 HTTP**（usesCleartextTraffic="true"）。前提是链路已被 VPN 加密或在内网。见安全节。
+- `api_server` 无模型目录接口，`/model` 接受任意 `provider/model` 字符串，填错会把会话锁死直到改对。
+- 仅在 Android 13/14（三星 One UI）实测。minSdk 29 / targetSdk 36。
+- 无 iOS 版，无计划。
 
-Read these before opening an issue that will not be answered.
+## 安装
 
-- **Background latency is not WeChat-grade.** Without a push channel, delivery depends on polling.
-  On Android 12+ Doze will stretch the interval — measured around 9 minutes with the screen off on
-  a Samsung S25. A foreground service with `setExactAndAllowWhileIdle` gets it down to 1-2 minutes
-  at the cost of battery. This is a physical consequence of the design, not a bug to be fixed.
-- **Cleartext HTTP is allowed** (`usesCleartextTraffic="true"`). The design assumes the link is
-  already encrypted by your VPN or that you are on a trusted LAN. See the security section.
-- **The context-usage bar needs a server-side patch.** Without it the bar stays hidden and nothing
-  else breaks. The patch is on `gateway/platforms/api_server.py` and is overwritten by every
-  Hermes upgrade — re-apply after upgrading, or just live without the bar.
-- `api_server` has no model catalog endpoint, so `/model` accepts a free-text `provider/model`
-  string. A bad model name locks the session until you set a good one.
-- Only tested on Android 13/14 (Samsung One UI). `minSdk 29`, `targetSdk 36`.
-- No iOS version. No plan for one.
+从 Releases 下载 APK 安装。已签名；覆盖旧版本保留数据。
 
-## Install
+首次启动添加联系人：
+- **名称**：随意
+- **地址**：跑 Hermes 的主机 IP，如 `192.168.1.100`（可省略 scheme，默认 http）
+- **端口**：默认 `8642`
+- **API Key**：那台机器的 `API_SERVER_KEY`
 
-Grab the APK from [Releases](../../releases) and install it. It is signed; updating over an older
-version keeps your data.
+### 服务端配置（Hermes api_server 开启方法）
 
-On first launch, add a contact:
+在跑 Hermes 的机器上执行：
 
-- **Name** — anything
-- **Address** — the host running Hermes, e.g. `192.168.1.100` (scheme optional, defaults to `http`)
-- **Port** — `8642` unless you changed it
-- **API Key** — the `API_SERVER_KEY` from that machine
+```bash
+# 1. 生成强随机 key 并配置
+hermes config set API_SERVER_ENABLED true
+hermes config set API_SERVER_KEY "$(openssl rand -hex 24)"   # 必须 ≥16 字符，短 key 会被静默拒绝
+hermes config set API_SERVER_HOST 0.0.0.0
+hermes config set API_SERVER_PORT 8642
+hermes gateway restart
 
-### Server side
+# 2. 验证
+ss -tln | grep 8642
+curl http://127.0.0.1:8642/v1/health
 
-In `~/.hermes/.env` on the machine running Hermes:
-
-```
-API_SERVER_ENABLED=true
-API_SERVER_KEY=<a long random string>
+# 3. 查看你的 key（粘贴进 App 联系人表单）
+grep API_SERVER_KEY ~/.hermes/.env
 ```
 
-Then restart the gateway. The key is a single static bearer token: it cannot be revoked
-individually and every request it authorises is logged only as a plain HTTP access line.
+配置写入 `~/.hermes/.env`，必须 `hermes gateway restart` 才生效——只改配置不会自动重启任何东西。
 
-Full setup walkthrough (commands, key generation, pitfalls, security notes):
-[docs/API-SERVER-SETUP.md](docs/API-SERVER-SETUP.md).
+**手机侧连接**：添加联系人填地址、端口 8642、第 3 步查出的 key。
 
-## Security — please actually read this
+## 安全 — 请务必读完
 
-Connecting this app to a Hermes endpoint means **this app can ask that machine to run commands.**
-The approval UI is the only thing standing between a tap and a shell.
+把 App 连到一个 Hermes 端点 = **这个 App 可以让那台机器执行命令**。审批 UI 是指尖和 shell 之间唯一的防线。
 
-1. **Never expose `api_server` to the public internet.** Not with port forwarding, not with a
-   public reverse proxy, not "just for a minute". Bind it to your LAN or to a VPN interface
-   (WireGuard, Tailscale, whatever you already trust).
-2. **Treat `API_SERVER_KEY` as equivalent to root** on that host. One static token, no scoping,
-   no expiry, no per-device revocation. If it leaks, rotate it by editing `.env` and restarting.
-3. **Keep approval mode on.** If you disable command approval on the server, this app becomes a
-   remote shell with no confirmation step.
-4. Traffic is plain HTTP inside your tunnel. That is a deliberate trade — it keeps setup to one
-   IP box — and it is only acceptable because the tunnel already encrypts.
-5. Local keys are encrypted with an Android Keystore key per contact. This protects against casual
-   file access and backup extraction. It does not protect against a rooted device with a Keystore
-   bypass, and it was never meant to.
+1. **绝不把 api_server 暴露到公网。** 不做端口转发、不做公网反向代理、不"就开一分钟"。只绑局域网或 VPN 接口（WireGuard、Tailscale 等你已信任的隧道）。
+2. **把 API_SERVER_KEY 当作那台主机的 root。** 单一静态 token：无作用域、无过期、无按设备吊销。泄漏就改 `.env` 换新并重启。
+3. **保持审批模式开启。** 服务端关审批，这个 App 就成了没有确认步骤的远程 shell。
+4. 隧道内是明文 HTTP——这是刻意的取舍，可接受的唯一理由是隧道本身已加密。
+5. 本地 key 用 Android Keystore 按联系人为单位加密，防的是普通文件读取和备份导出，防不了已 root 设备的 Keystore 绕过——本来也没打算防。
 
-## Build
+## 构建
 
-There is no Gradle project — the build is a hand-rolled `aapt2` + `d8` + `apksigner` chain, kept
-because it is fast and has no dependency resolution. You need JDK 17+, Android build-tools 34+,
-and `android.jar` for API 36.
+无 Gradle 工程，构建是手写的 `aapt2` + `d8` + `apksigner` 链（快、无依赖解析）。需要 JDK 17+、Android build-tools 34+、API 36 的 android.jar：
 
 ```sh
 export SDK_BUILD_TOOLS=$HOME/android/sdk/build-tools/36.0.0
@@ -115,40 +91,35 @@ export KS=$HOME/my-release.keystore
 export KS_PASS=...
 export KEY_ALIAS=...
 
-VC=39 VN=0.5.7 ./build.sh
+VC=43 VN=0.1.2 ./build.sh
 ```
 
-The script fails if `assets/app.js` inside the APK does not hash-match the source file, so a
-silently stale build cannot ship.
+脚本会校验 APK 内 `assets/app.js` 与源码哈希一致，不符即失败，杜绝静默过期构建。
 
-## Layout
+## 布局
 
 ```
 app/src/main/java/com/pocketorca/chat/
-  MainActivity.java     WebView host, JS bridge, activity lifecycle
-  PollScheduler.java    foreground service, alarm-driven polling, notifications
-  HermesAdapter.java    HTTP client for the Hermes api_server
-  ChatDB.java           local transcript (SQLite, WAL, dedup by message id)
-  Store.java            contacts and settings
-  CredentialVault.java  Keystore-backed token storage
-  MediaSaver.java       save received images to the gallery
-  BootReceiver.java     restart polling after reboot
+  MainActivity.java     WebView 宿主、JS 桥、Activity 生命周期
+  PollScheduler.java    前台服务、闹钟驱动轮询、通知
+  HermesAdapter.java    Hermes api_server 的 HTTP 客户端
+  ChatDB.java           本地聊天记录（SQLite、WAL、按消息 id 去重）
+  Store.java            联系人与设置
+  CredentialVault.java  Keystore 加密 token 存储
+  MediaSaver.java       收到的图片存入相册
+  BootReceiver.java     开机重启轮询
 app/src/main/assets/
-  index.html, app.js    the entire UI — no framework, no build step
+  index.html, app.js    全部 UI——无框架、无构建步骤
 ```
 
-The UI is a single HTML file plus one JS file, opened in a hardened WebView. That was a
-deliberate choice for a tool that had to be edited on-device sometimes.
+UI 是单个 HTML + 单个 JS，跑在加固过的 WebView 里。当时选这个形态是因为偶尔需要直接在设备上改。
 
-## Related projects
+## 相关项目
 
-If you want a Hermes phone client that is still maintained, look at
-[rusty4444/hermes-android](https://github.com/rusty4444/hermes-android) (Flutter, supports both the
-REST and the gateway JSON-RPC transports) or
-[Hy4ri/hermes-mobile](https://github.com/Hy4ri/hermes-mobile). Nous Research also runs a closed
-beta of an official mobile client. Those are better choices for most people; this one exists mainly
-because its author wanted multiple contacts and zero server patches.
+如果你想要一个仍在维护的 Hermes 手机客户端，可以看
+[rusty4444/hermes-android](https://github.com/rusty4444/hermes-android)（Flutter，支持 REST 和 gateway JSON-RPC 双传输）或
+[Hy4ri/hermes-mobile](https://github.com/Hy4ri/hermes-mobile)。Nous Research 也有官方移动端内测。对多数人来说那些是更好的选择；这个项目存在的主要原因是作者想要多联系人和零服务端补丁。
 
-## License
+## 许可
 
-MIT. See [LICENSE](LICENSE).
+MIT。见 [LICENSE](LICENSE)。
