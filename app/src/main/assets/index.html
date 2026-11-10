@@ -101,6 +101,8 @@ button.danger{color:var(--err);border-color:#5f2a2a}
 .sheet .row button{flex:1}
 #toast{position:fixed;left:50%;bottom:90px;transform:translateX(-50%);background:#333c48;color:var(--fg);padding:8px 16px;border-radius:20px;font-size:13px;display:none;z-index:20;max-width:80%}
 .hint{color:var(--dim);font-size:12px;margin-top:8px}
+.ct-toggle-row{display:flex;align-items:center;gap:8px;color:var(--dim);font-size:13px;margin-top:8px}
+.ct-toggle-row input{width:auto}
 .statusline{font-size:var(--fs-dim);color:var(--dim);text-align:center;margin:4px 0}
 </style>
 </head>
@@ -148,6 +150,13 @@ button.danger{color:var(--err);border-color:#5f2a2a}
   <input id="ctPort" placeholder="8642" inputmode="numeric">
   <label>API Key（该端点的 API_SERVER_KEY）</label>
   <input id="ctToken" type="password" placeholder="Bearer token">
+  <label class="ct-toggle-row"><input type="checkbox" id="ctWanToggle"> 添加公网地址（Tailscale，可选）</label>
+  <div id="ctWanBlock" style="display:none">
+    <label>公网地址（IP 或主机名，可带 http://，端口同上可省略）</label>
+    <input id="ctWanHost" placeholder="如 100.x.y.z" inputmode="url">
+    <label>公网端口（留空同局域网端口）</label>
+    <input id="ctWanPort" placeholder="8642" inputmode="numeric">
+  </div>
   <div class="hint">Key 用 Android Keystore（AES/GCM）加密存本地。</div>
   <div class="row"><button id="btnCtCancel">取消</button><button id="ctSave" class="primary">保存</button></div>
 </div></div>

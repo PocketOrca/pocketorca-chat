@@ -10,6 +10,7 @@ var state = {
   busy: false,
   events: [],
   pendingApprovals: [],
+  turnCid: null,       // vc41: contact that owns the active turn (status line must not leak across contacts)
   editingId: null,     // contact being edited in the sheet (null = adding)
   menuCid: null,       // vc15: contact targeted by the long-press menu
   confirmCb: null      // vc15: pending in-page confirm callback
@@ -141,8 +142,7 @@ function openContact(id) {
   if (id !== state.currentId) {
     turnState.save();
     state.currentId = id; state.runId = "";
-  }
-  $("view").innerHTML = "";
+  } $("view").innerHTML = "";
   botEl = null;
   showChat();
   __vc8AssertChatView();
@@ -217,16 +217,18 @@ function renderTitle() { $("title").textContent = curName(); }
  * 允许回合进行中切走再切回：离开时把运行期 DOM 状态（状态行文字/工具行/
  * 是否有活动 bot 气泡）存进 turnState，切回时重放；run 本体在 Java/服务端
  * 继续，事件照常由 handleEvent 消费（assistant.delta 会重新 startBotBubble）。 */
-var turnState = { status: "", tool: "", wasStreaming: false };
+var turnState = { status: "", tool: "", wasStreaming: false, cid: null };
 turnState.save = function () {
-  this.status = ""; this.tool = ""; this.wasStreaming = !!botEl;
+  this.status = ""; this.tool = ""; this.wasStreaming = !!botEl; this.cid = state.turnCid;
   var st = document.querySelector(".statusline");
   if (st) this.status = st.textContent;
   var tl = $("toolLine");
   if (tl && tl.classList.contains("show")) this.tool = tl.textContent;
 };
 turnState.restore = function () {
-  if (!state.busy) return;
+  // vc41: the snapshotted turn belongs to a specific contact — replaying A's
+  // "对方正在回复中…" into B's view was the cross-contact status leak.
+  if (!state.busy || this.cid !== state.currentId || state.turnCid !== this.cid) return;
   if (this.status) setStatus(this.status);
   if (this.tool) setToolLine(this.tool);
   this.status = ""; this.tool = ""; this.wasStreaming = false;
@@ -330,6 +332,14 @@ function openContactSheet(c) {
   $("ctHost").value = mh ? mh[2] : (u && !mh ? u.replace(/^https?:\/\//i, "").replace(/:\d+$/, "").replace(/\/+$/, "") : "");
   $("ctPort").value = mh && mh[3] ? mh[3] : (u ? "" : "8642");
   $("ctToken").value = c ? c.token : "";
+  // vc40: WAN (Tailscale) address — optional second address with failover
+  var wu = c ? (c.wanUrl || "") : "";
+  var wm = wu.match(/^(https?:)\/\/([^/:]+)(?::(\d+))?/i);
+  var hasWan = !!wu;
+  $("ctWanToggle").checked = hasWan;
+  $("ctWanBlock").style.display = hasWan ? "block" : "none";
+  $("ctWanHost").value = wm ? wm[2] : (wu && !wm ? wu.replace(/^https?:\/\//i, "").replace(/:\d+$/, "").replace(/\/+$/, "") : "");
+  $("ctWanPort").value = wm && wm[3] ? wm[3] : "";
   $("ctMask").classList.add("show");
 }
 function closeContactSheet() { $("ctMask").classList.remove("show"); }
@@ -342,9 +352,19 @@ function saveContact() {
     var scheme = /^https?:\/\//i.test(host) ? "" : "http://";
     url = scheme + host + (port ? ":" + port : "");
   }
+  // vc40: WAN address (only when the toggle is on)
+  var wanUrl = "";
+  if ($("ctWanToggle").checked) {
+    var whost = $("ctWanHost").value.trim().replace(/\/+$/, "");
+    if (whost) {
+      var wscheme = /^https?:\/\//i.test(whost) ? "" : "http://";
+      wanUrl = wscheme + whost + ($("ctWanPort").value.trim() ? ":" + $("ctWanPort").value.trim() : "");
+    }
+  }
   var body = JSON.stringify({
     name: $("ctName").value.trim(),
     url: url,
+    wanUrl: wanUrl,
     token: $("ctToken").value.trim()
   });
   var r;
@@ -369,6 +389,9 @@ function bind() {
   $("btnAdd").onclick = function () { openContactSheet(null); };
   $("btnCtCancel").onclick = closeContactSheet;
   $("ctSave").onclick = saveContact;
+  $("ctWanToggle").onchange = function () {   // vc40: show/hide WAN address fields
+    $("ctWanBlock").style.display = $("ctWanToggle").checked ? "block" : "none";
+  };
   // vc15: long-press action sheet + in-page confirm
   $("actCancel").onclick = closeActMenu;
   $("actMask").onclick = function (e) { if (e.target === $("actMask")) closeActMenu(); };
@@ -484,26 +507,55 @@ window.__sseEvent = function (json) {
   handleEvent(ev.event, ev.payload || {});
 };
 
+/* vc40: contact display name by id (foreign-event toast). */
+function contactName(cid) {
+  for (var i = 0; i < state.contacts.length; i++)
+    if (state.contacts[i].id === cid) return state.contacts[i].name || "联系人";
+  return "联系人";
+}
+
 function handleEvent(name, p) {
+  // vc40: route by ORIGIN contact. Java stamps payload.cid on every SSE event;
+  // if it belongs to a background turn on another contact, do NOT touch the
+  // on-screen turn state — only persist (bot bubble lands in the right DB row)
+  // and refresh model/health bookkeeping for THAT contact.
+  var originCid = p.cid || state.currentId;
+  var foreign = originCid !== state.currentId;
+  if (foreign && name === "assistant.completed") {
+    var bgDone = p.content || "";
+    if (bgDone) { try { Android.chatInsert(originCid, "bot", bgDone); } catch (e) {} }
+    if (p.runtime && p.runtime.model) saveModel(originCid, p.runtime.model);
+    markAlive(originCid);
+    toast("「" + contactName(originCid) + "」有新回复");
+    return;   // never touch botEl/runId/busy — that's the on-screen contact's turn
+  }
+  if (foreign && (name === "run.completed" || name === "run.failed" || name === "run.cancelled" || name === "run.interrupted")) {
+    if (p.usage) captureUsage(p.usage);
+    if (p.runtime && p.runtime.model) saveModel(originCid, p.runtime.model);
+    return;   // background turn finished; on-screen turn state untouched
+  }
+  if (foreign && name !== "approval.request" && name !== "approval.responded"
+      && name !== "relay.delta" && name !== "relay.status" && name !== "relay.approval"
+      && name !== "relay.error" && name !== "relay.done" && name !== "chat.done") {
+    return;   // any other foreign event: ignore (status lines belong to the visible turn)
+  }
   state.events.push({ event: name, payload: p });
   // vc25: 回合进行中切到联系人页 → 不往已清空的 #view 里塞气泡/状态行；
   // turnDone 照常推进，切回时靠 replayHistory 看到 assistant.completed 已落库的回复。
   var offView = $("chatView").style.display !== "flex";
   if (name === "run.started") {
     state.runId = p.run_id || "";
-    setStatus("对方正在回复中…"); showSteer();
-    runActivity("正在处理…");
+    if (state.turnCid === state.currentId) { setStatus("对方正在回复中…"); showSteer(); runActivity("正在处理…"); }
   }
   // vc26: 非流式整条收 —— message.started / assistant.delta 只推进状态行，
   // 正文等 assistant.completed 终态一次性渲染（Tailscale 下 SSE 逐 token 卡顿，
   // 且微信式 IM 习惯整条收）。收信链路不变（SSE 仍承载审批/工具/终态事件）。
-  else if (name === "message.started") { setStatus("对方正在回复中…"); }
+  else if (name === "message.started") { if (state.turnCid === state.currentId) setStatus("对方正在回复中…"); }
   else if (name === "assistant.delta") { /* vc26: dropped — final bubble only */ }
   else if (name === "assistant.commentary") { if (!offView) setToolLine("· " + (p.text || "")); }
   else if (name === "tool.started") {
     var tn = p.tool_name || p.tool || "tool";
-    if (!offView) setToolLine("🔧 " + tn + " …");
-    runActivity("正在使用工具 " + tn);
+    if (!offView && state.turnCid === state.currentId) { setToolLine("🔧 " + tn + " …"); runActivity("正在使用工具 " + tn); }
   }
   else if (name === "tool.completed") { if (!offView) setToolLine("✅ " + (p.tool_name || p.tool || "tool")); }
   else if (name === "tool.failed") { if (!offView) setToolLine("❌ " + (p.tool_name || p.tool || "tool") + " 失败"); }
@@ -581,7 +633,9 @@ function send(retryText) {
   // vc22: slash commands are handled on the phone — api_server has no slash dispatch,
   // a leading "/" would otherwise reach the agent as plain text.
   if (retryText === undefined && handleCommand($("input").value)) { resetInput(); return; }
-  if (state.busy) return;
+  // vc41: busy is per-contact — block only if THIS contact already has a running
+  // turn. Another contact's background turn must not lock the composer.
+  if (state.busy && state.turnCid === state.currentId) return;
   // vc9 fix: self-heal retry is the ONLY legit argument path, and it must be
   // a non-empty string. onclick historically leaked a PointerEvent here.
   if (retryText !== undefined && (typeof retryText !== "string" || !retryText)) return;
@@ -611,14 +665,20 @@ function send(retryText) {
   userMsg(text);
   try { Android.chatInsert(state.currentId, "user", text); } catch (e) {}   // vc6: local transcript
   state.busy = true; state.events = []; state.turnDone = false;
+  state.turnCid = state.currentId;   // vc41: this turn belongs to this contact
   $("btnSend").disabled = true; $("btnStop").style.display = "block";   // explicit (vc8 fix discipline)
   setStatus("连接…");
 
   var origHandler = window.__sseEvent;
+  var turnCidAtStart = state.currentId;   // vc41: concurrent turns — guard stale chat.done
   window.__sseEvent = function (json) {
     var ev; try { ev = JSON.parse(json); } catch (e) { return; }
     handleEvent(ev.event, ev.payload || {});
     if (ev.event === "chat.done") {
+      // vc41: chat.done now carries the origin cid (AsyncTurn stamps it). A
+      // chat.done from ANOTHER contact's turn must not clear this turn's state
+      // or restore an older handler chain.
+      if ((ev.payload || {}).cid && ev.payload.cid !== turnCidAtStart) return;
       window.__sseEvent = origHandler;
       var st = (ev.payload || {}).status || "";
       if (!state.turnDone) finishTurn(st || "done");
@@ -643,6 +703,7 @@ function finishTurn(status) {
   if (state.turnDone) return;
   state.turnDone = true;
   state.busy = false;
+  state.turnCid = null;   // vc41
   state.pendingText = ""; state.selfHeal = false;   // vc7: reset one-shot heal guards
   $("btnSend").disabled = false; $("btnStop").style.display = "none";
   hideSteer();

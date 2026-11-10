@@ -81,6 +81,9 @@ API_SERVER_KEY=<a long random string>
 Then restart the gateway. The key is a single static bearer token: it cannot be revoked
 individually and every request it authorises is logged only as a plain HTTP access line.
 
+Full setup walkthrough (commands, key generation, pitfalls, security notes):
+[docs/API-SERVER-SETUP.md](docs/API-SERVER-SETUP.md).
+
 ## Security — please actually read this
 
 Connecting this app to a Hermes endpoint means **this app can ask that machine to run commands.**

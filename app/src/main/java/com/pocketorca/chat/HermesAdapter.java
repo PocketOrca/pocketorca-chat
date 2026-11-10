@@ -44,12 +44,32 @@ final class HermesAdapter {
      *  blocks the JS bridge thread, so openContact() stays instant. */
     static void healthAsync(String cid) { POOL.submit(new HealthProbe(cid)); }
 
-    /** Named Runnable (d8-safe): one background /v1/health probe. */
+    /** Named Runnable (d8-safe): one background /v1/health probe.
+     *  vc40: dual-address — probe both LAN and WAN (if set); either reachable = online. */
     static final class HealthProbe implements Runnable {
         private final String cid;
         HealthProbe(String cid) { this.cid = cid; }
         public void run() {
             String r = get(cid, "/v1/health");
+            try {
+                JSONObject o = new JSONObject(r);
+                if (o.optInt("http", 0) >= 200 && o.optInt("http", 0) < 500) {
+                    Store.setActiveAddr(cid, "lan");
+                } else {
+                    String wan = Store.wanUrl(cid);
+                    if (!wan.isEmpty()) {
+                        try {
+                            HttpURLConnection c = openRaw(wan + "/v1/health", cid, "GET", false);
+                            int code = c.getResponseCode();
+                            c.disconnect();
+                            if (code >= 200 && code < 500) {
+                                Store.setActiveAddr(cid, "wan");
+                                r = "{\"http\":" + code + ",\"body\":\"{}\",\"via\":\"wan\"}";
+                            }
+                        } catch (Exception ignore) {}
+                    }
+                }
+            } catch (Exception ignore) {}
             MainActivity.pushEventToJs("{\"event\":\"health\",\"payload\":{\"cid\":\""
                     + cid.replace("\"", "").replace("\\", "") + "\",\"result\":" + r + "}}");
         }
@@ -78,7 +98,7 @@ final class HermesAdapter {
 
     /** Blocking chat/stream; returns {status, events:[...]} JSON to JS. */
     static String chatStreamSync(String cid, String sessionId, String message) {
-        StreamCollector sink = new StreamCollector();
+        StreamCollector sink = new StreamCollector(cid);
         try {
             JSONObject body = new JSONObject();
             body.put("message", message == null ? "" : message);
@@ -90,11 +110,15 @@ final class HermesAdapter {
         }
     }
 
-    /** Named SseSink (d8-safe): slims events, tracks terminal status, forwards approvals. */
+    /** Named SseSink (d8-safe): slims events, tracks terminal status, forwards approvals.
+     *  vc40: carries origin cid so JS routes events to the RIGHT contact. */
     static final class StreamCollector implements SseSink {
         final StringBuilder events = new StringBuilder();
         boolean first = true;
         String status = "";
+        final String cid;
+        StreamCollector() { this.cid = ""; }
+        StreamCollector(String cid) { this.cid = cid == null ? "" : cid; }
 
         public void event(String name, JSONObject payload) {
             if ("done".equals(name)) return;
@@ -111,6 +135,8 @@ final class HermesAdapter {
                     try { payload.put("message", "http " + payload.getInt("http")); } catch (Exception ignore) {}
                 }
                 // Forward every event to the live JS handler (demo previously only pushed approvals)
+                // vc40: cid stamped so JS routes by ORIGIN contact, not by what's on screen
+                payload.put("cid", cid);
                 MainActivity.pushEventToJs("{\"event\":\"" + name + "\",\"payload\":" + payload.toString() + "}");
             } catch (Exception ignore) {}
         }
@@ -127,6 +153,13 @@ final class HermesAdapter {
         AsyncTurn(String cid, String sessionId, String message) { this.cid = cid; this.sessionId = sessionId; this.message = message; }
         public void run() {
             String result = chatStreamSync(cid, sessionId, message);
+            // vc41: stamp the origin cid — JS guards a stale chat.done from a
+            // concurrent turn against clearing the on-screen turn's state.
+            try {
+                JSONObject r = new JSONObject(result);
+                r.put("cid", cid);
+                result = r.toString();
+            } catch (Exception ignore) {}
             MainActivity.pushEventToJs("{\"event\":\"chat.done\",\"payload\":" + result + "}");
         }
     }
@@ -423,10 +456,24 @@ final class HermesAdapter {
 
     private interface SseSink { void event(String name, JSONObject payload); }
 
-    private static HttpURLConnection conn(String cid, String path, String method, boolean doOut) throws Exception {
-        String base = Store.url(cid);
-        if (base == null || base.isEmpty()) throw new IllegalStateException("联系人不存在或已删除");
-        URL u = new URL(base + path);
+    /** vc40: periodic LAN re-probe (60s min gap) — if LAN works again, switch back. */
+    private static void maybeReprobeLan(final String cid) {
+        long now = System.currentTimeMillis();
+        if (now - Store.lastProbe(cid) < 60000L) return;
+        Store.setLastProbe(cid, now);
+        POOL.submit(new Runnable() { public void run() {
+            try {
+                HttpURLConnection c = openRaw(Store.url(cid) + "/v1/health", cid, "GET", false);
+                int code = c.getResponseCode();
+                c.disconnect();
+                if (code >= 200 && code < 500) Store.setActiveAddr(cid, "lan");   // reachable
+            } catch (Exception ignore) {}
+        }});
+    }
+
+    /** vc40: raw connection to an explicit base URL (failover probe / normal open). */
+    private static HttpURLConnection openRaw(String base, String cid, String method, boolean doOut) throws Exception {
+        URL u = new URL(base);
         HttpURLConnection c = (HttpURLConnection) u.openConnection();
         c.setRequestMethod(method);
         c.setConnectTimeout(5000);
@@ -436,6 +483,37 @@ final class HermesAdapter {
         c.setRequestProperty("Accept", "text/event-stream, application/json");
         if (doOut) { c.setDoOutput(true); c.setRequestProperty("Content-Type", "application/json"); }
         return c;
+    }
+
+    private static HttpURLConnection conn(String cid, String path, String method, boolean doOut) throws Exception {
+        String lan = Store.url(cid);
+        if (lan == null || lan.isEmpty()) throw new IllegalStateException("联系人不存在或已删除");
+        String wan = Store.wanUrl(cid);
+        String active = Store.activeAddr(cid);
+        // Build candidate list: active first, then the other address if configured.
+        java.util.ArrayList<String> bases = new java.util.ArrayList<>();
+        String first = "wan".equals(active) && !wan.isEmpty() ? wan : lan;
+        bases.add(first);
+        String other = first.equals(lan) ? wan : lan;
+        if (!other.isEmpty() && !other.equals(first)) bases.add(other);
+
+        Exception last = null;
+        for (int i = 0; i < bases.size(); i++) {
+            String base = bases.get(i);
+            try {
+                HttpURLConnection c = openRaw(base + path, cid, method, doOut);
+                // Failover trigger: for plain requests, force the response code here
+                // so a connect failure throws before we hand the connection back.
+                if (!doOut || method.equals("GET")) c.getResponseCode();
+                if (i > 0) Store.setActiveAddr(cid, base.equals(wan) ? "wan" : "lan");   // remember winner
+                // not on LAN → schedule periodic LAN re-probe (come-home self-heal)
+                if (!base.equals(lan)) maybeReprobeLan(cid);
+                return c;
+            } catch (Exception e) {
+                last = e;
+            }
+        }
+        throw last != null ? last : new IllegalStateException("无可用地址");
     }
 
     private static String get(String cid, String path) {
@@ -451,26 +529,45 @@ final class HermesAdapter {
         return postWithHeaders(cid, path, json, null, null);
     }
 
-    /** POST with extra headers (for Idempotency-Key). */
+    /** POST with extra headers (for Idempotency-Key). vc40: connect-level failover retry. */
     private static String postWithHeaders(String cid, String path, String json,
                                           String[] headerNames, String[] headerValues) {
-        try {
-            HttpURLConnection c = conn(cid, path, "POST", true);
-            if (headerNames != null && headerValues != null) {
-                for (int i = 0; i < headerNames.length; i++) {
-                    c.setRequestProperty(headerNames[i], headerValues[i]);
+        Exception last = null;
+        for (int attempt = 0; attempt < 2; attempt++) {
+            try {
+                HttpURLConnection c = conn(cid, path, "POST", true);
+                if (headerNames != null && headerValues != null) {
+                    for (int i = 0; i < headerNames.length; i++) {
+                        c.setRequestProperty(headerNames[i], headerValues[i]);
+                    }
                 }
+                OutputStream out = c.getOutputStream();
+                out.write(json.getBytes(StandardCharsets.UTF_8));
+                out.close();
+                int code = c.getResponseCode();
+                String body = readAll(c);
+                return "{\"http\":" + code + ",\"body\":" + jq(body) + "}";
+            } catch (Exception e) {
+                last = e;
+                // first failure: conn() already tried the other address; retry once
+                // more so a flipped activeAddr takes effect on this same call
             }
-            OutputStream out = c.getOutputStream();
-            out.write(json.getBytes(StandardCharsets.UTF_8));
-            out.close();
-            int code = c.getResponseCode();
-            String body = readAll(c);
-            return "{\"http\":" + code + ",\"body\":" + jq(body) + "}";
-        } catch (Exception e) { return err(e); }
+        }
+        return err(last);
     }
 
     private static void streamSse(String cid, String path, String json, SseSink sink) throws Exception {
+        // vc40: two attempts so a connect-level failover (conn() flips activeAddr)
+        // takes effect within the same send.
+        Exception last = null;
+        for (int attempt = 0; attempt < 2; attempt++) {
+            try { streamSseOnce(cid, path, json, sink); return; }
+            catch (Exception e) { last = e; }
+        }
+        throw last;
+    }
+
+    private static void streamSseOnce(String cid, String path, String json, SseSink sink) throws Exception {
         HttpURLConnection c = conn(cid, path, "POST", true);
         OutputStream out = c.getOutputStream();
         out.write(json.getBytes(StandardCharsets.UTF_8));

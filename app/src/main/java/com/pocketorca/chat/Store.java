@@ -50,6 +50,7 @@ final class Store {
         try {
             JSONObject in = new JSONObject(json);
             String url = in.optString("url", "").trim().replaceAll("/+$", "");
+            String wanUrl = sanitizeUrl(in.optString("wanUrl", ""));
             String token = in.optString("token", "");
             String name = in.optString("name", "").trim();
             if (!url.startsWith("http://") && !url.startsWith("https://"))
@@ -61,6 +62,8 @@ final class Store {
             String id = "c" + System.currentTimeMillis();
             JSONObject item = new JSONObject();
             item.put("id", id); item.put("name", name); item.put("url", url);
+            // vc40: optional secondary (WAN/Tailscale) address; failover lives in HermesAdapter
+            if (!wanUrl.isEmpty()) item.put("wanUrl", wanUrl);
             // M4: token encrypted via CredentialVault
             if (!token.isEmpty()) {
                 CredentialVault.saveToken(appContext(), id, token);
@@ -81,6 +84,13 @@ final class Store {
             if (!url.startsWith("http://") && !url.startsWith("https://"))
                 return err("URL 需以 http(s):// 开头");
             item.put("url", url);
+            // vc41: name edits were silently dropped (only url/wanUrl/token were
+            // persisted) while the UI still toasted 已保存.
+            String newName = in.optString("name", "").trim();
+            if (!newName.isEmpty()) item.put("name", newName);
+            // vc40: WAN address; empty string removes it
+            String wanUrl = sanitizeUrl(in.optString("wanUrl", ""));
+            if (wanUrl.isEmpty()) item.remove("wanUrl"); else item.put("wanUrl", wanUrl);
             String newToken = in.optString("token", item.optString("token"));
             // M4: token encrypted via CredentialVault
             if (!newToken.isEmpty()) {
@@ -111,6 +121,34 @@ final class Store {
 
     // ---- per-contact credential lookups (HermesAdapter) ----
     static synchronized String url(String id) { JSONObject c = find(id); return c == null ? "" : c.optString("url", ""); }
+    /** vc40: secondary (WAN/Tailscale) address; "" if none. */
+    static synchronized String wanUrl(String id) { JSONObject c = find(id); return c == null ? "" : c.optString("wanUrl", ""); }
+    /** vc40: which address is currently working ("lan"/"wan"); default lan. */
+    static synchronized String activeAddr(String id) { JSONObject c = find(id); return c == null ? "lan" : c.optString("activeAddr", "lan"); }
+    static synchronized void setActiveAddr(String id, String which) {
+        try {
+            JSONObject c = find(id);
+            if (c == null) return;
+            c.put("activeAddr", "wan".equals(which) ? "wan" : "lan");
+            save(load());
+        } catch (Exception ignore) {}
+    }
+    static synchronized long lastProbe(String id) { JSONObject c = find(id); return c == null ? 0 : c.optLong("lastProbe", 0L); }
+    static synchronized void setLastProbe(String id, long ts) {
+        try {
+            JSONObject c = find(id);
+            if (c == null) return;
+            c.put("lastProbe", ts);
+            save(load());
+        } catch (Exception ignore) {}
+    }
+    /** vc40: normalize an optional URL field: trim, strip trailing slashes, enforce scheme. */
+    private static String sanitizeUrl(String raw) {
+        String u = raw == null ? "" : raw.trim().replaceAll("/+$", "");
+        if (u.isEmpty()) return "";
+        if (!u.startsWith("http://") && !u.startsWith("https://")) u = "http://" + u;
+        return u;
+    }
     // M4: token retrieved from Keystore-backed vault
     static synchronized String token(String id) {
         String tok = CredentialVault.getToken(appContext(), id);

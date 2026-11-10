@@ -480,6 +480,13 @@ public class PollScheduler extends Service {
 
             // vc25: 前台也通知——去掉 hasRecent 30min 抑制（连真新消息一起吞）。
             // 幂等由 markSeen(mid) + insert 返回 -1（mid 唯一索引 CONFLICT_IGNORE）兜底。
+            // vc41: bot 消息恢复文本级去重 —— assistant.completed 已把正文
+            // chatInsert 落库（无 mid，seen 表无从幂等），轮询若再按 mid 首见
+            // 就插第二遍并触发重复通知。仅抑制 bot 侧（user 保持不抑制）。
+            if ("bot".equals(mapped)
+                    && ChatDB.hasRecent(cid, "bot", content, System.currentTimeMillis() - 24 * 3600_000L)) {
+                continue;
+            }
             if (ChatDB.insert(cid, mapped, content, mid) <= 0) continue;
             added++;
 
