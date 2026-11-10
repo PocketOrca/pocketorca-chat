@@ -77,9 +77,17 @@ final class Store {
 
     static synchronized String updateContact(String id, String json) {
         try {
-            JSONObject in = new JSONObject(json);
-            JSONObject item = find(id);
+            JSONObject root = load();
+            JSONArray arr = root.optJSONArray("contacts");
+            JSONObject item = null;
+            if (arr != null) {
+                for (int i = 0; i < arr.length(); i++) {
+                    JSONObject c = arr.optJSONObject(i);
+                    if (c != null && id.equals(c.optString("id"))) { item = c; break; }
+                }
+            }
             if (item == null) return err("联系人不存在");
+            JSONObject in = new JSONObject(json);
             String url = in.optString("url", item.optString("url")).trim().replaceAll("/+$", "");
             if (!url.startsWith("http://") && !url.startsWith("https://"))
                 return err("URL 需以 http(s):// 开头");
@@ -96,7 +104,9 @@ final class Store {
             if (!newToken.isEmpty()) {
                 CredentialVault.saveToken(appContext(), id, newToken);
             }
-            save(load());
+            // vc41b: save the SAME root we mutated — the old save(load()) re-read
+            // the file and silently wrote the pre-edit JSON back (all field edits lost).
+            save(root);
             return ok(id);
         } catch (Exception e) { return err(e.getMessage()); }
     }
@@ -127,19 +137,21 @@ final class Store {
     static synchronized String activeAddr(String id) { JSONObject c = find(id); return c == null ? "lan" : c.optString("activeAddr", "lan"); }
     static synchronized void setActiveAddr(String id, String which) {
         try {
-            JSONObject c = find(id);
+            JSONObject root = load();
+            JSONObject c = findIn(root, id);   // vc41b: same-root mutation; old find()+save(load()) lost the write
             if (c == null) return;
             c.put("activeAddr", "wan".equals(which) ? "wan" : "lan");
-            save(load());
+            save(root);   // vc41b: was save(load()) — mutation lost (same bug class)
         } catch (Exception ignore) {}
     }
     static synchronized long lastProbe(String id) { JSONObject c = find(id); return c == null ? 0 : c.optLong("lastProbe", 0L); }
     static synchronized void setLastProbe(String id, long ts) {
         try {
-            JSONObject c = find(id);
+            JSONObject root = load();
+            JSONObject c = findIn(root, id);   // vc41b: same-root mutation
             if (c == null) return;
             c.put("lastProbe", ts);
-            save(load());
+            save(root);   // vc41b: was save(load()) — mutation lost (same bug class)
         } catch (Exception ignore) {}
     }
     /** vc40: normalize an optional URL field: trim, strip trailing slashes, enforce scheme. */
@@ -160,8 +172,10 @@ final class Store {
     static synchronized String name(String id) { JSONObject c = find(id); return c == null ? "" : c.optString("name", ""); }
 
     // ---- internals ----
-    private static JSONObject find(String id) {
-        JSONArray arr = load().optJSONArray("contacts");
+    private static JSONObject find(String id) { return findIn(load(), id); }
+
+    private static JSONObject findIn(JSONObject root, String id) {
+        JSONArray arr = root.optJSONArray("contacts");
         if (arr == null || id == null) return null;
         for (int i = 0; i < arr.length(); i++) {
             JSONObject c = arr.optJSONObject(i);
