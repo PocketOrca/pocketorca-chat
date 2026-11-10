@@ -13,10 +13,10 @@
 #   KS               keystore path
 #   KS_PASS          keystore password
 #   KEY_ALIAS        key alias
-#   VC               versionCode (default 39)
-#   VN               versionName (default 0.5.7)
+#   VC               versionCode (default 43)
+#   VN               versionName (default 0.1.2)
 #
-# Usage: VC=39 VN=0.5.7 ./build.sh
+# Usage: VC=43 VN=0.1.2 ./build.sh
 #
 # The script ends with an integrity check: assets/app.js inside the APK must be
 # byte-identical to the source file, otherwise the build fails.
@@ -33,8 +33,8 @@ OUT=$ROOT/build
 : "${KS_PASS:?set KS_PASS}"
 : "${KEY_ALIAS:?set KEY_ALIAS}"
 
-VC=${VC:-39}
-VN=${VN:-0.5.7}
+VC=${VC:-43}
+VN=${VN:-0.1.2}
 ARTIFACT=$ROOT/PocketOrca-Chat-v$VN-vc$VC-release.apk
 
 rm -rf "$OUT/classes" "$OUT/dex" "$OUT/res.zip" "$OUT/base.apk" "$OUT/aligned.apk"

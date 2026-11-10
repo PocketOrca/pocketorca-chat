@@ -200,6 +200,20 @@ public class MainActivity extends Activity {
             if (s != null) s.updateRunActivity(text == null ? "" : text);
         }
         // vc26: version string for the settings sheet
+
+        // vc29: user-configurable poll interval (ms, clamped 30s-10min in PollScheduler)
+        @JavascriptInterface public void setPollInterval(String msStr) {
+            try {
+                long ms = Long.parseLong(msStr.trim());
+                PollScheduler s = pollSvc;
+                if (s != null) s.setUserInterval(ms);
+            } catch (Exception ignore) {}
+        }
+        @JavascriptInterface public String getPollInterval() {
+            PollScheduler s = pollSvc;
+            return String.valueOf(s != null ? s.getUserInterval() : 60000L);
+        }
+
         @JavascriptInterface public String appVersion() {
             try {
                 return Store.context().getPackageManager()
