@@ -120,6 +120,10 @@ UI 是单个 HTML + 单个 JS，跑在加固过的 WebView 里。当时选这个
 [rusty4444/hermes-android](https://github.com/rusty4444/hermes-android)（Flutter，支持 REST 和 gateway JSON-RPC 双传输）或
 [Hy4ri/hermes-mobile](https://github.com/Hy4ri/hermes-mobile)。Nous Research 也有官方移动端内测。对多数人来说那些是更好的选择；这个项目存在的主要原因是作者想要多联系人和零服务端补丁。
 
+## 联系方式
+
+邮箱：[pocketorca.dev@gmail.com](mailto:pocketorca.dev@gmail.com)
+
 ## 许可
 
 MIT。见 [LICENSE](LICENSE)。
